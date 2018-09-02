@@ -73,8 +73,6 @@ test-oled.obj: test-oled.cpp | arduino_headers
 	$(CCPP) $(CCPARAMS) -o $@ $^
 
 test-oled: test-oled.obj $(u8x8_objects) $(u8x8cpp_objects) $(arduino_objects)
-	echo $(arduino_objects)
-	echo $(arduino_headers)
 	$(CCPP) -mmcu=$(MCU) $^ -o $@ 
 
 test-oled.hex: test-oled
