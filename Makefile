@@ -13,14 +13,16 @@ CORE=$(ARDUINOHOME)/cores/arduino
 LIBRARIES=$(ARDUINOHOME)/libraries
 VARIANT=standard
 VARIANTPATH=$(ARDUINOHOME)/variants/$(VARIANT)
-CCPARAMS=-Os -DF_CPU=8000000L -DARDUINO -fno-fat-lto-objects -flto -mmcu=atmega168p -c -I u8g2/cppsrc -Iu8g2/csrc -Iarduino
-LDPARAMS=-mmcu=atmega168p -flto
+CCPARAMS=-O1 -DF_CPU=8000000L -DARDUINO -fno-fat-lto-objects -flto -mmcu=atmega168 -c -I u8g2/cppsrc -Iu8g2/csrc -Iarduino
+#CCPARAMS=-O1 -DF_CPU=8000000L -fno-fat-lto-objects -flto -mmcu=atmega168 -c
+#LDPARAMS=-mmcu=atmega168 -flto
+LDPARAMS=-mmcu=atmega168
 DUDE=avrdude
 RM=rm
 
 
 # The 3v3 pro minis are atmega168pa but the device codes on them suggest that they are atmega168
-MCU=m168
+MCU=atmega168
 PROGRAMMER_BAUD=19200
 PROGRAMMER_TYPE=arduino
 CONSOLE_BAUD=9600
@@ -44,9 +46,17 @@ u8x8_objects     = $(patsubst %.c,u8g2/csrc/%.o,$(u8x8_modules))
 
 
 ## By default, just build but don't upload.
-default: test-oled
+default: test-oled2
 
 .PHONY: clean upload run arduino_headers
+
+# Upload and run are separate steps
+upload: test-oled2.hex
+	$(DUDE) -F -V -c $(PROGRAMMER_TYPE) -p $(MCU) -P /dev/ttyUSB0 -b $(PROGRAMMER_BAUD) -U flash:w:$<
+
+run: upload
+	sleep 2
+	minicom -8 -b $(CONSOLE_BAUD) -D /dev/ttyUSB0 
 
 clean:
 	$(RM) -f test-oled.hex
@@ -84,16 +94,22 @@ arduino/pins_arduino.h: arduino # important: select the right variant or the pin
 
 
 # u8g2 and u8x8 files are in a submodule folder
-u8g2/cppsrc/%.obj: u8g2/cppsrc/%.cpp
-	$(CCPP) $(CCPARAMS) -o $@ $^
+u8g2/cppsrc/%.obj: u8g2/cppsrc/%.cpp $(arduino_local_headers)
+	$(CCPP) $(CCPARAMS) -o $@ $(filter-out %.h,$^)
 
 u8g2/csrc/%.o: u8g2/csrc/%.c
-	$(CC) $(CCPARAMS) -o $@ $^
+	$(CC) $(CCPARAMS) -o $@ $(filter-out %.h,$^)
 
+
+%.obj: %.cpp
+	$(CCPP) $(CCPARAMS) -o $@ $(filter-out %.h,$^)
+
+%.o: %.c
+	$(CC) $(CCPARAMS) -o $@ $(filter-out %.h,$^)
 
 # Finally, our actual program
-test-oled.obj: test-oled.cpp | arduino_headers
-	$(CCPP) $(CCPARAMS) -o $@ $^
+test-oled.obj: test-oled.cpp $(arduino_local_headers)
+	$(CCPP) $(CCPARAMS) -o $@ $(filter-out %.h,$^)
 
 test-oled: test-oled.obj $(u8x8_objects) $(u8x8cpp_objects) $(arduino_objects)
 	$(CCPP) $(LDPARAMS) $^ -o $@ 
@@ -102,10 +118,22 @@ test-oled.hex: test-oled
 	$(OBJCOPY) -O ihex -R .eeprom $< $@
 
 
-# Upload and run are separate steps
-upload: test-oled.hex
-	$(DUDE) -F -V -c $(PROGRAMMER_TYPE) -p $(MCU) -P /dev/ttyUSB0 -b $(PROGRAMMER_BAUD) -U flash:w:test-oled.hex
+test-oled2.o: test-oled2.c $(arduino_local_headers)
+	$(CC) $(CCPARAMS) -o $@ $(filter-out %.h,$^)
 
-run: upload
-	sleep 2
-	minicom -8 -b $(CONSOLE_BAUD) -D /dev/ttyUSB0 
+test-oled2: test-oled2.o async-uart.o i2c.o $(u8x8_objects) $(u8x8cpp_objects)
+	$(CC) $(LDPARAMS) $^ -o $@ 
+
+test-oled2.hex: test-oled2
+	$(OBJCOPY) -O ihex -R .eeprom $< $@
+
+
+test3.o: test3.c
+	$(CC) $(CCPARAMS) -o $@ $^
+
+test3: test3.o async-uart.o
+	$(CC) $(LDPARAMS) $^ -o $@ 
+
+test3.hex: test3
+	$(OBJCOPY) -O ihex -R .eeprom $< $@
+
