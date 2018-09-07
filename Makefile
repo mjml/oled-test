@@ -25,7 +25,7 @@ RM=rm
 MCU=atmega168
 PROGRAMMER_BAUD=19200
 PROGRAMMER_TYPE=arduino
-CONSOLE_BAUD=9600
+CONSOLE_BAUD=19200
 
 
 ## Emulate an Arduino Processing environment using these variables.

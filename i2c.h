@@ -1,19 +1,26 @@
 #ifndef _I2C_H
 
-#ifndef I2C_BUF_SIZE
-#define I2C_BUF_SIZE 32
-#endif
-
 #ifndef _I2C_CPP
 #define EXTERN extern
 #else
 #define EXTERN
 #endif
 
+#ifndef I2C_BUF_SIZE
+#define I2C_BUF_SIZE 48
+#endif
+
+#ifndef I2C_NUM_ASYNC_XFER
+#define I2C_NUM_ASYNC_XFER 8
+#endif
+
 EXTERN volatile uint8_t i2c_hwstatus;
 EXTERN volatile uint8_t i2c_swerror;
 EXTERN uint8_t i2c_write_addr;
 EXTERN volatile uint8_t i2c_mode;
+
+EXTERN volatile uint8_t i2c_hws[64];
+EXTERN volatile uint8_t i2c_hws_idx;
 
 enum I2C_SPEEDS {
 	I2C_SPD_1KHZ,
@@ -29,8 +36,9 @@ enum I2C_SPEEDS {
 
 enum I2C_MODES {
 	I2CM_IDLE = 0,
-	I2CM_WRITE,
-	I2CM_READ,
+	I2CM_SYNC,
+	I2CM_ASYNC_WRITE,
+	I2CM_ASYNC_READ,
 	I2CS_IDLE = 0x80,
 	I2CS_RESPONDING
 };
@@ -43,6 +51,8 @@ enum I2C_ERROR_MODES {
 };
 
 typedef void i2c_cb(uint8_t sladdr, int bufsz, uint8_t* buf);
+
+typedef uint8_t i2cerr;
 
 
 inline uint8_t i2c_get_status()
@@ -60,28 +70,51 @@ inline uint8_t i2c_get_status()
  */
 void i2cm_init (uint8_t twbr, uint8_t twps);
 
-
 /**
 	 Initialize i2c subsystem for master mode.
 	 Speed selected by convenient enum code.
  */
-void i2cm_init_easy (enum I2C_SPEEDS speedcode);
+void i2cm_init_at_speed (enum I2C_SPEEDS speedcode);
+
 
 /**
-	 Write bytes to a slave. Copies data to an internal buffer (size of I2C_BUF_SIZE).
+	Send a start signal. Buffers the slave address.
  */
-void i2cm_write (int sladdr, int bufsz, uint8_t* buf);
+i2cerr i2cm_start (uint8_t sladdr, uint8_t rw);
 
 /**
-	 Write bytes to a slave. Writes directly from the buffer given with no copy.
+	Send a stop signal.
  */
-void i2cm_writed (int sladdr, int bufsz, uint8_t* buf);
+i2cerr i2cm_stop ();
 
 /**
-	 Request to read bytes from a slave. Read bytes are written asynchronously
-   to the provided buffer. When a STOP is received, and i2c_mode is set to I2CM_IDLE.
+	Send a write signal and return when it is finished.
  */
-void i2cm_read (int sladdr, int bufsz, uint8_t* buf, i2c_cb cb);
+i2cerr i2cm_write (uint8_t* buf, uint16_t bufsz);
+
+/**
+	Instruct the TWI device to emit a start signal.
+ */
+i2cerr i2cm_async_start (uint8_t sladdr, uint8_t rw);
+
+/**
+	Instruct the TWI device to emit a stop signal.
+ */
+i2cerr i2cm_async_stop ();
+
+/**
+	 Asynchronously send a complete write to a slave, enclosed by start and stop. 
+	 Copies data to an internal buffer (size of I2C_BUF_SIZE).
+	 Blocks on overflow.
+*/
+i2cerr i2cm_async_write (uint8_t* buf, uint16_t bufsz);
+
+/**
+	 Asynchronously receive bytes from a slave, enclosed by start and stop.
+   Writes directly to the provided buffer. 
+	 When a STOP is received, and i2c_mode is set to I2CM_IDLE.
+ */
+i2cerr i2cm_read (int sladdr, uint8_t* buf, uint16_t bufsz, i2c_cb cb);
 
 /**
 	 Returns 1 if the i2c state machine is ready to write or read.
@@ -95,8 +128,8 @@ inline uint8_t i2cm_ready ()
 /* ### SLAVE MODE ###  (unimplemented)   */
 
 void i2cs_init ();
-void i2cs_poll (int bufsz, uint8_t* buf);
-void i2cs_accept (int bufsz, uint8_t* buf, i2c_cb cb);
+void i2cs_poll (uint8_t* buf, uint16_t bufsz);
+void i2cs_accept (uint8_t* buf, uint16_t bufsz, i2c_cb cb);
 
 
 #endif // _I2C_H
