@@ -74,7 +74,7 @@ uint8_t oled_byte_cb (u8x8_t* u8x8, uint8_t msg, uint8_t arg_int, void* arg_ptr)
 			if (oled_audit) {
 				println("start_transfer #%d",i2c_xfer_end,arg_int);
 			}
-			i2cm_async_start(0x3c,0);
+			i2cm_start(0x3c,0);
       break;
     case U8X8_MSG_BYTE_SEND:
 			if (oled_audit) {
@@ -87,7 +87,7 @@ uint8_t oled_byte_cb (u8x8_t* u8x8, uint8_t msg, uint8_t arg_int, void* arg_ptr)
 			  checkState(NULL);
 				*/
 			}
-			i2cm_async_write((uint8_t*)arg_ptr, arg_int);
+			i2cm_write((uint8_t*)arg_ptr, arg_int);
 			if (oled_audit) {
 			  _delay_us(5000);
 		    checkState("after 5ms");
@@ -104,7 +104,7 @@ uint8_t oled_byte_cb (u8x8_t* u8x8, uint8_t msg, uint8_t arg_int, void* arg_ptr)
 			if (oled_audit) {
 				println("end_transfer #%d size %d [%d %d]", i2c_xfer_end, i2c_xfer_sz[i2c_xfer_end], i2c_write_begin-i2c_write_buf, i2c_write_end-i2c_write_buf);
 			}
-			i2cm_async_stop();
+			i2cm_stop();
 			// Since we're working asynchronously, nothing really to do here...
       break;
     default:
@@ -129,12 +129,11 @@ int main ()
 	u8x8_Setup(&g_u8x8,u8x8_d_ssd1306_128x64_noname,u8x8_cad_ssd13xx_i2c,oled_byte_cb,oled_gpio_cb);
 
 	u8x8_SetI2CAddress(&g_u8x8,0x3c<<1);
-	//checkState("SetI2CAddress");
+	checkState("SetI2CAddress");
 
 	u8x8_InitDisplay(&g_u8x8);
-	//checkState("InitDisplay");
+	checkState("InitDisplay");
 
-	/*
 	u8x8_ClearDisplay(&g_u8x8);
 	checkState("ClearDisplay");
 
@@ -150,7 +149,6 @@ int main ()
 	u8x8_DrawString(&g_u8x8, 1,3, "Hello, world!");
 	checkState("DrawString");
 	
-	*/
 	while(1) {
 		asm("nop;");
 	}
