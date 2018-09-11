@@ -3,8 +3,10 @@
 #include <avr/interrupt.h>
 #include <avr/io.h>
 #include <util/twi.h>
+#include <util/delay.h>
 #include <assert.h>
 #include <string.h>
+#include <stdlib.h>
 #include "i2c.h"
 
 uint8_t  i2c_write_buf[I2C_BUF_SIZE];
@@ -12,7 +14,7 @@ volatile uint8_t* i2c_write_begin;
 volatile uint8_t* i2c_write_end;
 volatile uint16_t i2c_write_idx;
 uint8_t  i2c_sladdr;
-int16_t  i2c_xfer_sz[I2C_NUM_ASYNC_XFER];
+uint16_t  i2c_xfer_sz[I2C_NUM_ASYNC_XFER];
 volatile uint8_t i2c_xfer_begin;
 volatile uint8_t i2c_xfer_end;
 
@@ -135,43 +137,78 @@ i2cerr i2cm_write (uint8_t* buf, uint16_t bufsz)
 i2cerr i2cm_async_start (uint8_t sladdr, uint8_t rw)
 {
 	// reset transfer bytes
-	i2c_mode = I2CM_ASYNC_WRITE;
+	cli();
 	i2c_xfer_sz[i2c_xfer_end] = 0;
+	if (i2c_xfer_begin == i2c_xfer_end && i2c_write_begin == i2c_write_end) {
+		// transfer AND buffer underflow condition at start, so send start signal to get things moving
+		i2c_mode = I2CM_ASYNC_WRITE_START_SLAW;
+		i2c_sladdr = sladdr;
+		TWCR = _BV(TWSTA) | _BV(TWEN) | _BV(TWIE) | _BV(TWINT);
+	}
+	sei();
 	
-	// send start signal and request interrupt notification
-	TWCR = _BV(TWSTA) | _BV(TWEN) | _BV(TWIE) | _BV(TWINT);
-
 	return 0;
 }
 
 i2cerr i2cm_async_stop ()
 {
+	cli();
+
+	// check for write buffer underflow
+	uint8_t underflow = i2c_write_idx == i2c_xfer_sz[i2c_xfer_begin];
+	uint8_t stop_already_sent = i2c_mode == I2CM_ASYNC_PREEMPTIVE_STOP;
+	if (underflow && !stop_already_sent) {
+		// send an explicit stop since we're done sending data
+		i2c_mode = I2CM_IDLE;
+		TWCR = _BV(TWSTO) | _BV(TWEN) | _BV(TWINT);
+		_delay_us(1); // wait briefly to ensure the STOP signal went through
+	}
+	
+	// set the sign bit of the xfer size to negative to indicate an explicit stop,
+	// (even if stop was already sent, and even if we just sent the stop signal, for consistency)
+	if (i2c_xfer_sz[i2c_xfer_end] > 0) {
+			i2c_xfer_sz[i2c_xfer_end] *= -1;
+	}
+
 	// check for transfer overflow
 	uint8_t new_xfer_end = INC_RING(i2c_xfer_end,I2C_NUM_ASYNC_XFER);
-	while (new_xfer_end == i2c_xfer_begin) asm("nop;");
+	if (new_xfer_end == i2c_xfer_begin) {
+		sei();
+		while (new_xfer_end == i2c_xfer_begin) asm("nop;");
+		cli();
+	}
 	i2c_xfer_end = new_xfer_end;
+
+	sei();
 	return 0;
 }
 
 i2cerr i2cm_async_write (uint8_t* buf, uint16_t bufsz)
 {
 	int i=0;
-	uint8_t first_byte = i2c_write_begin == i2c_write_end;
-	if (first_byte) {
-		// Underflow and also initial condition. Send the first byte manually.
-		// CAUTION: Race condition on repeat underflows here. Probably OK.
-		i++;
-		TWDR = *buf;
-		TWCR = _BV(TWEN) | _BV(TWIE) | _BV(TWINT); 
-	}
-	
+  volatile uint8_t* new_write_end;
+	cli();
+	uint8_t underflow = i2c_write_idx == i2c_xfer_sz[i2c_xfer_begin];
 	while (i < bufsz) {
 		*i2c_write_end = buf[i];
-		i2c_write_end = INC_CIRCBUF(i2c_write_end,i2c_write_buf,I2C_BUF_SIZE);
 		i2c_xfer_sz[i2c_xfer_end]++;
-		while (i2c_write_end == i2c_write_begin) asm("nop;");
+		new_write_end = INC_CIRCBUF(i2c_write_end,i2c_write_buf,I2C_BUF_SIZE);
+		if (new_write_end == i2c_write_begin) {
+			// buffer overflow condition -- must block until i2c_write_begin has caught up
+			underflow = 0;
+			sei();
+			while (new_write_end == i2c_write_begin) asm("nop;");
+			cli();
+		}
+		i2c_write_end = new_write_end;
 		i++;
 	}
+	if (underflow && i2c_mode != I2CM_ASYNC_WRITE_START_SLAW) {
+		TWDR = *i2c_write_begin;
+		TWCR |= _BV(TWINT);
+	}
+	sei();
+	
 	return 0;
 }
 
@@ -184,43 +221,45 @@ i2cerr i2cm_read (int sladdr, uint8_t* buf, uint16_t bufsz, i2c_cb cb)
 
 ISR(TWI_vect)
 {
-	i2c_hws[i2c_hws_idx++] =
+	//i2c_hws[i2c_hws_idx++] =
 	i2c_hwstatus = i2c_get_status();
+	int16_t cur_xfer_sz = abs(i2c_xfer_sz[i2c_xfer_begin]);
+	uint8_t cur_xfer_complete = i2c_xfer_sz[i2c_xfer_begin] < 0;
 	switch (i2c_hwstatus) {
 	case TW_START:
 	case TW_REP_START:
 		TWDR = i2c_sladdr << 1;
 		TWCR &= ~_BV(TWSTA);
 		break;
-	case TW_MT_SLA_ACK:
 	case TW_MT_DATA_ACK:
-		if (i2c_write_idx == i2c_xfer_sz[i2c_xfer_begin]) {
-			// transfer finished, send stop if there are no more transfers, or send repeat start
+		i2c_write_begin = INC_CIRCBUF(i2c_write_begin,i2c_write_buf,I2C_BUF_SIZE);
+		i2c_write_idx++;
+	case TW_MT_SLA_ACK:
+		if (i2c_write_idx != cur_xfer_sz) {
+			// transfer in progress, send next byte
+			TWDR = *i2c_write_begin;
+			i2c_mode = I2CM_ASYNC_WRITE;
+		} else if (cur_xfer_complete) {
 			i2c_write_idx = 0;
 			i2c_xfer_sz[i2c_xfer_begin] = 0;
 			i2c_xfer_begin = INC_RING(i2c_xfer_begin,I2C_NUM_ASYNC_XFER);
-			if (i2c_xfer_begin == i2c_xfer_end) {
-				// transfer buffer underflow: just send a stop
-				TWCR = _BV(TWSTO) | _BV(TWEN) | _BV(TWIE);
-				break;
-			} else {
-				// more transfers: send a repeat start
-				// TODO: examine the possibility of adding (needing?) STOP/START within this handler.
-				// "Correct" I2C here is the repeat start, but maybe some devices would prefer
-				//   the more canonical START-STOP enclosure.
+			if (i2c_xfer_begin != i2c_xfer_end) {
+				// continue pending transfers: send a repeat start
 				TWCR = _BV(TWSTA) | _BV(TWEN) | _BV(TWIE);
 				TWCR |= _BV(TWINT);
+				i2c_mode = I2CM_ASYNC_WRITE;
+			} else {
+				// transfer buffer underflow: this is our full stop condition
+				TWCR = _BV(TWSTO) | _BV(TWEN) | _BV(TWIE);
+				i2c_mode = I2CM_IDLE;
+				break;
 			}
 		} else {
-			// transfer in progress, send next byte
-			TWDR = *i2c_write_begin;
-			i2c_write_begin = INC_CIRCBUF(i2c_write_begin,i2c_write_buf,I2C_BUF_SIZE);
-			i2c_write_idx++;
-			if (i2c_write_begin == i2c_write_end) {
-				// buffer underflow: leave pointers equal and the next async write will look like
-				// it's the first byte sent after a start/sla+w, so it will manually send a byte.
-				TWCR = _BV(TWSTO) | _BV(TWEN) | _BV(TWIE);
-			}
+			// write buffer underflow. Next write will explcitly push a byte out.
+			PORTB ^= _BV(PORTB5);
+			TWCR |= _BV(TWSTO);
+			i2c_mode = I2CM_ASYNC_PREEMPTIVE_STOP;
+			return;
 		}
 		break;
 	case TW_MT_SLA_NACK:
