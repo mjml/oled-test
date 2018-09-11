@@ -3,3 +3,6 @@ arduino/
 *.obj
 test?
 *.hex
+test-oled
+test-oled2
+test-*
