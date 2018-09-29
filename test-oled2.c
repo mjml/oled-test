@@ -60,6 +60,7 @@ void checkState(char* str)
 uint8_t oled_byte_cb (u8x8_t* u8x8, uint8_t msg, uint8_t arg_int, void* arg_ptr)
 {
   uint8_t *data;
+	i2cerr result;
 	
   switch(msg)
   {
@@ -79,25 +80,10 @@ uint8_t oled_byte_cb (u8x8_t* u8x8, uint8_t msg, uint8_t arg_int, void* arg_ptr)
     case U8X8_MSG_BYTE_SEND:
 			if (oled_audit) {
 				println("  send %d bytes (currently at %d)", arg_int, i2c_write_idx); // might be causing an underflow
-				/*
-				for (int i=0; i < arg_int; i++) {
-					print("0x%02x ", ((uint8_t*)(arg_ptr))[i]);
-				}
-				print("]\r\n");
-			  checkState(NULL);
-				*/
 			}
-			i2cm_write((uint8_t*)arg_ptr, arg_int);
+			result = i2cm_write((uint8_t*)arg_ptr, arg_int);
 			if (oled_audit) {
-			  _delay_us(5000);
-		    checkState("after 5ms");
-				/*			
-				print("[ ");
-				for (int i=0; i < i2c_hws_idx; i++) {
-					print("0x%02x ", i2c_hws[i]);
-				}
-				println("]");
-				*/
+				println("  result = 0x%02x", result);
 			}
       break;
     case U8X8_MSG_BYTE_END_TRANSFER:
@@ -105,7 +91,6 @@ uint8_t oled_byte_cb (u8x8_t* u8x8, uint8_t msg, uint8_t arg_int, void* arg_ptr)
 				println("end_transfer #%d size %d [%d %d]", i2c_xfer_end, i2c_xfer_sz[i2c_xfer_end], i2c_write_begin-i2c_write_buf, i2c_write_end-i2c_write_buf);
 			}
 			i2cm_stop();
-			// Since we're working asynchronously, nothing really to do here...
       break;
     default:
       return 0;
@@ -148,7 +133,7 @@ int main ()
 
 	u8x8_DrawString(&g_u8x8, 1,3, "Hello, world!");
 	checkState("DrawString");
-	
+
 	while(1) {
 		asm("nop;");
 	}

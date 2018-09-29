@@ -18,6 +18,9 @@ uint16_t  i2c_xfer_sz[I2C_NUM_ASYNC_XFER];
 volatile uint8_t i2c_xfer_begin;
 volatile uint8_t i2c_xfer_end;
 
+uint8_t i2c_twbr_cache;
+uint8_t i2c_twsr_cache;
+
 i2c_cb i2c_read_cb;
 volatile uint16_t i2c_read_idx;
 
@@ -31,9 +34,12 @@ void i2cm_init (uint8_t twbr, uint8_t twps)
 	i2c_sladdr = 0;
 	i2c_xfer_begin = i2c_xfer_end = 0;
 	i2c_mode = I2CM_IDLE;
+
+	i2c_twbr_cache = twbr;
+	i2c_twsr_cache = twps & 0x03;
 	
-	TWSR = (twps & 0x3);   // set prescaler
-	TWBR = twbr;           // x2 = 32 total scale for 100kHz operation
+	TWSR = i2c_twsr_cache;   // set prescaler
+	TWBR = i2c_twbr_cache;           // x2 = 32 total scale for 100kHz operation
 }
 
 void i2cm_init_at_speed (enum I2C_SPEEDS speedcode)
@@ -94,7 +100,7 @@ i2cerr i2cm_start (uint8_t sladdr, uint8_t rw)
 	
 	int hwstatus = 0;
 	do {
-		hwstatus = TWSR & ~0x03;
+		hwstatus = i2c_get_status();
 	} while ((hwstatus != TW_START && hwstatus != TW_REP_START) ||
 					 ~TWCR & _BV(TWINT));
 	
@@ -121,15 +127,14 @@ i2cerr i2cm_stop ()
 
 i2cerr i2cm_write (uint8_t* buf, uint16_t bufsz)
 {
-	int hwstatus=0;
 	do {
-		hwstatus = TWSR & ~0x03;
-	} while (hwstatus != TW_MT_SLA_ACK && hwstatus != TW_MT_DATA_ACK);
+		i2c_hwstatus = i2c_get_status();
+	} while (i2c_hwstatus != TW_MT_SLA_ACK && i2c_hwstatus != TW_MT_DATA_ACK);
 	
 	for (int i=0; i < bufsz; i++) {
 		TWDR = buf[i];
 		TWCR |= _BV(TWINT);
-		while ((TWSR & (~0x03)) != TW_MT_DATA_ACK) asm("nop;");
+		while (i2c_hwstatus = i2c_get_status() != TW_MT_DATA_ACK) asm("nop;");
 	}
 	return 0;
 }
@@ -156,18 +161,18 @@ i2cerr i2cm_async_stop ()
 
 	// check for write buffer underflow
 	uint8_t underflow = i2c_write_idx == i2c_xfer_sz[i2c_xfer_begin];
-	uint8_t stop_already_sent = i2c_mode == I2CM_ASYNC_PREEMPTIVE_STOP;
-	if (underflow && !stop_already_sent) {
+	if (underflow) {
 		// send an explicit stop since we're done sending data
 		i2c_mode = I2CM_IDLE;
-		TWCR = _BV(TWSTO) | _BV(TWEN) | _BV(TWINT);
+		TWCR = _BV(TWSTO) | _BV(TWEN) | _BV(TWINT) | _BV(TWIE);
 		_delay_us(1); // wait briefly to ensure the STOP signal went through
 	}
 	
 	// set the sign bit of the xfer size to negative to indicate an explicit stop,
-	// (even if stop was already sent, and even if we just sent the stop signal, for consistency)
+	// (even if stop was already sent, and even if we just sent the stop signal,
+	//      for consistency)
 	if (i2c_xfer_sz[i2c_xfer_end] > 0) {
-			i2c_xfer_sz[i2c_xfer_end] *= -1;
+	  i2c_xfer_sz[i2c_xfer_end] *= -1;
 	}
 
 	// check for transfer overflow
@@ -194,7 +199,7 @@ i2cerr i2cm_async_write (uint8_t* buf, uint16_t bufsz)
 		i2c_xfer_sz[i2c_xfer_end]++;
 		new_write_end = INC_CIRCBUF(i2c_write_end,i2c_write_buf,I2C_BUF_SIZE);
 		if (new_write_end == i2c_write_begin) {
-			// buffer overflow condition -- must block until i2c_write_begin has caught up
+			// data overflow -- must block until i2c_write_begin has caught up
 			underflow = 0;
 			sei();
 			while (new_write_end == i2c_write_begin) asm("nop;");
@@ -203,9 +208,20 @@ i2cerr i2cm_async_write (uint8_t* buf, uint16_t bufsz)
 		i2c_write_end = new_write_end;
 		i++;
 	}
-	if (underflow && i2c_mode != I2CM_ASYNC_WRITE_START_SLAW) {
+	if (underflow && i2c_mode == I2CM_ASYNC_WRITE_UNDERFLOW_WAIT) {
+		PORTB ^= _BV(PORTB5);
+		int hwstatus = 0;
+		TWCR = _BV(TWEN);
+		//do {
+			hwstatus = i2c_get_status();
+			//} while (i-- > 0 && hwstatus != TW_MT_SLA_ACK && hwstatus != TW_MT_DATA_ACK);
+		if (hwstatus != TW_MT_SLA_ACK && hwstatus != TW_MT_DATA_ACK) {
+			return (i2cerr)hwstatus;
+		}
+		PORTB &= ~_BV(PORTB5);
+		i2c_mode = I2CM_ASYNC_WRITE;
 		TWDR = *i2c_write_begin;
-		TWCR |= _BV(TWINT);
+		TWCR = _BV(TWEN) | _BV(TWIE) | _BV(TWINT);
 	}
 	sei();
 	
@@ -255,10 +271,12 @@ ISR(TWI_vect)
 				break;
 			}
 		} else {
-			// write buffer underflow. Next write will explcitly push a byte out.
-			PORTB ^= _BV(PORTB5);
-			TWCR |= _BV(TWSTO);
-			i2c_mode = I2CM_ASYNC_PREEMPTIVE_STOP;
+			// write buffer underflow.
+			// to avoid spamming TWDR, just turn off the TW device
+			// a subsequent write will re-enable it and send a byte
+			PORTB |= _BV(PORTB5);
+			TWCR &= ~_BV(TWEN);
+			i2c_mode = I2CM_ASYNC_WRITE_UNDERFLOW_WAIT;
 			return;
 		}
 		break;

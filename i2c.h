@@ -17,8 +17,8 @@
 
 EXTERN volatile uint8_t i2c_hwstatus;
 EXTERN volatile uint8_t i2c_swerror;
-EXTERN uint8_t i2c_write_addr;
 EXTERN volatile uint8_t i2c_mode;
+EXTERN uint8_t i2c_write_addr;
 
 EXTERN volatile uint8_t i2c_hws[64];
 EXTERN volatile uint8_t i2c_hws_idx;
@@ -40,7 +40,7 @@ enum I2C_MODES {
 	I2CM_SYNC,
 	I2CM_ASYNC_WRITE_START_SLAW,
 	I2CM_ASYNC_WRITE,
-	I2CM_ASYNC_PREEMPTIVE_STOP,
+	I2CM_ASYNC_WRITE_UNDERFLOW_WAIT,
 	I2CM_ASYNC_READ,
 	I2CS_IDLE = 0x80,
 	I2CS_RESPONDING
